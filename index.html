@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>南京市溧水区热力图</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    html,body,#map{width:100%;height:100%;margin:0;background:#e8edf2;font-family:"Microsoft YaHei",Arial,sans-serif}
+    .panel{position:absolute;z-index:1000;border-radius:12px;background:rgba(255,255,255,.94);box-shadow:0 4px 18px rgba(15,23,42,.18);color:#172033}
+    .controls{top:24px;right:24px;width:238px;padding:15px 17px}.controls h2{margin:0 0 12px;font-size:15px}.control-row{display:flex;align-items:center;justify-content:space-between;margin:9px 0;font-size:13px}.control-row select,.control-row input[type=range]{width:120px}.control-row input[type=checkbox]{width:18px;height:18px}.panel-button{width:100%;margin-top:8px;padding:8px 12px;border:0;border-radius:7px;background:#172033;color:#fff;font-size:13px;cursor:pointer}.show-settings{display:none;top:24px;right:24px;width:auto;padding:9px 14px;border:0;cursor:pointer;font-size:13px;font-weight:700}
+    .legend{right:24px;bottom:28px;width:260px;padding:15px 17px}.legend-title{font-size:14px;font-weight:700;margin-bottom:9px}.gradient{height:13px;border-radius:8px;background:linear-gradient(90deg,#2563eb 0%,#22d3ee 26%,#84cc16 48%,#facc15 68%,#f97316 84%,#dc2626 100%)}.legend-labels{display:flex;justify-content:space-between;margin-top:7px;font-size:12px;color:#667085}
+    .hotspot-label{background:rgba(23,32,51,.88);border:0;border-radius:6px;color:#fff;box-shadow:0 2px 7px rgba(0,0,0,.22);font-size:12px;font-weight:700;padding:5px 7px;white-space:nowrap}.hotspot-label:before{display:none}
+    .point-tooltip{font-family:"Microsoft YaHei",Arial,sans-serif;line-height:1.55}.point-tooltip strong{font-size:13px}.point-tooltip span{color:#667085}
+    .leaflet-control-attribution{font-size:10px!important;background:rgba(255,255,255,.8)!important}
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div class="panel controls">
+    <h2>显示设置</h2>
+    <label class="control-row"><span>常驻标注</span><select id="labelCount"><option value="5">权重前 5</option><option value="10" selected>权重前 10</option><option value="15">权重前 15</option><option value="60">全部点位</option></select></label>
+    <label class="control-row"><span>热区半径</span><input id="radius" type="range" min="20" max="60" step="2" value="38"></label>
+    <label class="control-row"><span>显示点位</span><input id="showPoints" type="checkbox" checked></label>
+    <button id="hideSettings" class="panel-button" type="button">隐藏设置</button>
+  </div>
+  <button id="showSettings" class="panel show-settings" type="button">显示设置</button>
+  <div class="panel legend"><div class="legend-title">权重（weight）</div><div class="gradient"></div><div class="legend-labels"><span>低</span><span id="maxWeight">高</span></div></div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+  <script>
+    const EARTH_AXIS_METERS = 6378245.0;
+    const EARTH_ECCENTRICITY_SQUARED = 0.00669342162296594323;
+
+    function transformLatitude(x, y) {
+      let result = -100 + 2*x + 3*y + .2*y*y + .1*x*y + .2*Math.sqrt(Math.abs(x));
+      result += (20*Math.sin(6*x*Math.PI) + 20*Math.sin(2*x*Math.PI)) * 2/3;
+      result += (20*Math.sin(y*Math.PI) + 40*Math.sin(y/3*Math.PI)) * 2/3;
+      return result + (160*Math.sin(y/12*Math.PI) + 320*Math.sin(y*Math.PI/30)) * 2/3;
+    }
+    function transformLongitude(x, y) {
+      let result = 300 + x + 2*y + .1*x*x + .1*x*y + .1*Math.sqrt(Math.abs(x));
+      result += (20*Math.sin(6*x*Math.PI) + 20*Math.sin(2*x*Math.PI)) * 2/3;
+      result += (20*Math.sin(x*Math.PI) + 40*Math.sin(x/3*Math.PI)) * 2/3;
+      return result + (150*Math.sin(x/12*Math.PI) + 300*Math.sin(x/30*Math.PI)) * 2/3;
+    }
+    // 天地图坐标叠加到高德底图前转为 GCJ-02，避免点位偏移。
+    function wgs84ToGcj02(lon, lat) {
+      const radLat = lat / 180 * Math.PI;
+      let magic = Math.sin(radLat); magic = 1 - EARTH_ECCENTRICITY_SQUARED * magic * magic;
+      const sqrtMagic = Math.sqrt(magic);
+      const dLat = transformLatitude(lon - 105, lat - 35) * 180 / ((EARTH_AXIS_METERS * (1 - EARTH_ECCENTRICITY_SQUARED)) / (magic * sqrtMagic) * Math.PI);
+      const dLon = transformLongitude(lon - 105, lat - 35) * 180 / (EARTH_AXIS_METERS / sqrtMagic * Math.cos(radLat) * Math.PI);
+      return [lon + dLon, lat + dLat];
+    }
+
+    const map = L.map('map', {preferCanvas:true}).setView([31.65,119.03], 12);
+    L.tileLayer('https://webst01.is.autonavi.com/appmaptile?style=7&x={x}&y={y}&z={z}', {maxZoom:18,attribution:'&copy; 高德地图',crossOrigin:true}).addTo(map);
+    const pointLayer = L.layerGroup().addTo(map);
+    const labelLayer = L.layerGroup().addTo(map);
+    let heatLayer;
+    let points = [];
+
+    function tooltipHtml(point) {
+      return `<div class="point-tooltip"><strong>${point.address}</strong><br><span>weight：</span>${point.weight.toLocaleString('zh-CN')}<br><span>经纬度：</span>${point.sourceLon.toFixed(6)}, ${point.sourceLat.toFixed(6)}</div>`;
+    }
+    function renderHeat(radius) {
+      if (heatLayer) map.removeLayer(heatLayer);
+      const maxWeight = Math.max(...points.map(point => point.weight));
+      heatLayer = L.heatLayer(points.map(point => [point.lat,point.lon,point.weight]), {radius:Number(radius),blur:28,maxZoom:14,max:maxWeight,minOpacity:.24,gradient:{.12:'#2563eb',.28:'#22d3ee',.48:'#84cc16',.68:'#facc15',.84:'#f97316',1:'#dc2626'}}).addTo(map);
+    }
+    function renderPoints(visible) {
+      pointLayer.clearLayers();
+      if (!visible) return;
+      points.forEach(point => L.circleMarker([point.lat,point.lon], {radius:4,color:'#fff',weight:1.5,fillColor:'#172033',fillOpacity:.78}).bindTooltip(tooltipHtml(point), {direction:'top',opacity:.97}).addTo(pointLayer));
+    }
+    function renderLabels(count) {
+      labelLayer.clearLayers();
+      [...points].sort((a,b) => b.weight-a.weight).slice(0,Number(count)).forEach(point => {
+        L.marker([point.lat,point.lon], {interactive:false,icon:L.divIcon({className:'',html:`<div class="hotspot-label">${point.address.replace('南京市溧水区','')} ${point.weight.toLocaleString('zh-CN')}</div>`,iconSize:null,iconAnchor:[0,22]})}).addTo(labelLayer);
+      });
+    }
+
+    fetch('/data.json').then(response => response.json()).then(source => {
+      points = source.map(item => { const [lon,lat] = wgs84ToGcj02(item.lon,item.lat); return {...item,sourceLon:item.lon,sourceLat:item.lat,lon,lat}; });
+      const maxWeight = Math.max(...points.map(point => point.weight));
+      document.getElementById('maxWeight').textContent = `高（${maxWeight.toLocaleString('zh-CN')}）`;
+      map.fitBounds(L.latLngBounds(points.map(point => [point.lat,point.lon])), {padding:[85,85],maxZoom:13});
+      renderHeat(document.getElementById('radius').value); renderPoints(true); renderLabels(10);
+    });
+    document.getElementById('labelCount').addEventListener('change', event => renderLabels(event.target.value));
+    document.getElementById('radius').addEventListener('input', event => renderHeat(event.target.value));
+    document.getElementById('showPoints').addEventListener('change', event => renderPoints(event.target.checked));
+    document.getElementById('hideSettings').addEventListener('click', () => {
+      document.querySelector('.controls').style.display = 'none';
+      document.getElementById('showSettings').style.display = 'block';
+    });
+    document.getElementById('showSettings').addEventListener('click', () => {
+      document.querySelector('.controls').style.display = 'block';
+      document.getElementById('showSettings').style.display = 'none';
+    });
+  </script>
+</body>
+</html>
