@@ -11,6 +11,7 @@
     .controls{top:24px;right:24px;width:238px;padding:15px 17px}.controls h2{margin:0 0 12px;font-size:15px}.control-row{display:flex;align-items:center;justify-content:space-between;margin:9px 0;font-size:13px}.control-row select,.control-row input[type=range]{width:120px}.control-row input[type=checkbox]{width:18px;height:18px}.panel-button{width:100%;margin-top:8px;padding:8px 12px;border:0;border-radius:7px;background:#172033;color:#fff;font-size:13px;cursor:pointer}.show-settings{display:none;top:24px;right:24px;width:auto;padding:9px 14px;border:0;cursor:pointer;font-size:13px;font-weight:700}
     .legend{right:24px;bottom:28px;width:260px;padding:15px 17px}.legend-title{font-size:14px;font-weight:700;margin-bottom:9px}.gradient{height:13px;border-radius:8px;background:linear-gradient(90deg,#2563eb 0%,#22d3ee 26%,#84cc16 48%,#facc15 68%,#f97316 84%,#dc2626 100%)}.legend-labels{display:flex;justify-content:space-between;margin-top:7px;font-size:12px;color:#667085}
     .hotspot-label{background:rgba(23,32,51,.88);border:0;border-radius:6px;color:#fff;box-shadow:0 2px 7px rgba(0,0,0,.22);font-size:12px;font-weight:700;padding:5px 7px;white-space:nowrap}.hotspot-label:before{display:none}
+    .cluster-marker{display:flex;align-items:center;justify-content:center;border:3px solid rgba(255,255,255,.92);border-radius:50%;background:var(--cluster-color);box-shadow:0 3px 10px rgba(15,23,42,.35);color:#fff;font-size:12px;font-weight:700;white-space:nowrap}
     .point-tooltip{font-family:"Microsoft YaHei",Arial,sans-serif;line-height:1.55}.point-tooltip strong{font-size:13px}.point-tooltip span{color:#667085}
     .leaflet-control-attribution{font-size:10px!important;background:rgba(255,255,255,.8)!important}
   </style>
@@ -19,6 +20,7 @@
   <div id="map"></div>
   <div class="panel controls">
     <h2>显示设置</h2>
+    <label class="control-row"><span>展示模式</span><select id="displayMode"><option value="heat" selected>热力图</option><option value="cluster">数据聚合</option><option value="both">热力 + 聚合</option></select></label>
     <label class="control-row"><span>常驻标注</span><select id="labelCount"><option value="5">权重前 5</option><option value="10" selected>权重前 10</option><option value="15">权重前 15</option><option value="60">全部点位</option></select></label>
     <label class="control-row"><span>热区半径</span><input id="radius" type="range" min="20" max="60" step="2" value="38"></label>
     <label class="control-row"><span>显示点位</span><input id="showPoints" type="checkbox" checked></label>
@@ -58,6 +60,9 @@
     L.tileLayer('https://webst01.is.autonavi.com/appmaptile?style=7&x={x}&y={y}&z={z}', {maxZoom:18,attribution:'&copy; 高德地图',crossOrigin:true}).addTo(map);
     const pointLayer = L.layerGroup().addTo(map);
     const labelLayer = L.layerGroup().addTo(map);
+    const clusterLayer = L.layerGroup().addTo(map);
+    const CLUSTER_CELL_SIZE_PX = 82;
+    const MAX_CLUSTER_NAMES = 6;
     let heatLayer;
     let points = [];
 
@@ -81,16 +86,76 @@
       });
     }
 
+    function formatClusterWeight(weight) {
+      if (weight >= 10000) return `${(weight / 10000).toFixed(1)}万`;
+      return weight.toLocaleString('zh-CN');
+    }
+    function clusterColor(weight, maxWeight) {
+      const ratio = maxWeight ? weight / maxWeight : 0;
+      if (ratio >= .75) return '#dc2626';
+      if (ratio >= .5) return '#f97316';
+      if (ratio >= .25) return '#f59e0b';
+      return '#22c55e';
+    }
+    function renderClusters() {
+      clusterLayer.clearLayers();
+      if (!points.length) return;
+      const groups = new Map();
+      points.forEach(point => {
+        const pixel = map.latLngToLayerPoint([point.lat, point.lon]);
+        const key = `${Math.floor(pixel.x / CLUSTER_CELL_SIZE_PX)}:${Math.floor(pixel.y / CLUSTER_CELL_SIZE_PX)}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(point);
+      });
+      const aggregates = [...groups.values()].map(items => {
+        const totalWeight = items.reduce((sum, item) => sum + item.weight, 0);
+        return {
+          items,
+          totalWeight,
+          lat: items.reduce((sum, item) => sum + item.lat * item.weight, 0) / totalWeight,
+          lon: items.reduce((sum, item) => sum + item.lon * item.weight, 0) / totalWeight,
+        };
+      });
+      const maxWeight = Math.max(...aggregates.map(item => item.totalWeight));
+      aggregates.forEach(aggregate => {
+        const size = Math.min(68, 38 + Math.log2(aggregate.items.length + 1) * 7);
+        const names = aggregate.items.sort((a,b) => b.weight-a.weight).slice(0, MAX_CLUSTER_NAMES).map(item => item.address.replace('南京市溧水区',''));
+        const remaining = aggregate.items.length - names.length;
+        const nameText = `${names.join('、')}${remaining > 0 ? ` 等 ${aggregate.items.length} 个点位` : ''}`;
+        const tooltip = `<div class="point-tooltip"><strong>聚合数据</strong><br><span>点位数量：</span>${aggregate.items.length}<br><span>weight 合计：</span>${aggregate.totalWeight.toLocaleString('zh-CN')}<br><span>包含：</span>${nameText}</div>`;
+        const marker = L.marker([aggregate.lat, aggregate.lon], {
+          icon: L.divIcon({className:'',html:`<div class="cluster-marker" style="width:${size}px;height:${size}px;--cluster-color:${clusterColor(aggregate.totalWeight,maxWeight)}">${formatClusterWeight(aggregate.totalWeight)}</div>`,iconSize:[size,size],iconAnchor:[size/2,size/2]})
+        }).bindTooltip(tooltip, {direction:'top',opacity:.97});
+        marker.addTo(clusterLayer);
+      });
+    }
+    function applyDisplayMode() {
+      const mode = document.getElementById('displayMode').value;
+      const showHeat = mode === 'heat' || mode === 'both';
+      const showClusters = mode === 'cluster' || mode === 'both';
+      if (heatLayer) map.removeLayer(heatLayer);
+      if (showHeat) renderHeat(document.getElementById('radius').value);
+      clusterLayer.clearLayers();
+      if (showClusters) renderClusters();
+      renderPoints(mode !== 'cluster' && document.getElementById('showPoints').checked);
+      renderLabels(mode !== 'cluster' ? document.getElementById('labelCount').value : 0);
+    }
+
     fetch('/data.json').then(response => response.json()).then(source => {
       points = source.map(item => { const [lon,lat] = wgs84ToGcj02(item.lon,item.lat); return {...item,sourceLon:item.lon,sourceLat:item.lat,lon,lat}; });
       const maxWeight = Math.max(...points.map(point => point.weight));
       document.getElementById('maxWeight').textContent = `高（${maxWeight.toLocaleString('zh-CN')}）`;
       map.fitBounds(L.latLngBounds(points.map(point => [point.lat,point.lon])), {padding:[85,85],maxZoom:13});
-      renderHeat(document.getElementById('radius').value); renderPoints(true); renderLabels(10);
+      applyDisplayMode();
     });
-    document.getElementById('labelCount').addEventListener('change', event => renderLabels(event.target.value));
-    document.getElementById('radius').addEventListener('input', event => renderHeat(event.target.value));
-    document.getElementById('showPoints').addEventListener('change', event => renderPoints(event.target.checked));
+    document.getElementById('displayMode').addEventListener('change', applyDisplayMode);
+    document.getElementById('labelCount').addEventListener('change', applyDisplayMode);
+    document.getElementById('radius').addEventListener('input', applyDisplayMode);
+    document.getElementById('showPoints').addEventListener('change', applyDisplayMode);
+    map.on('zoomend moveend', () => {
+      const mode = document.getElementById('displayMode').value;
+      if (mode === 'cluster' || mode === 'both') renderClusters();
+    });
     document.getElementById('hideSettings').addEventListener('click', () => {
       document.querySelector('.controls').style.display = 'none';
       document.getElementById('showSettings').style.display = 'block';
